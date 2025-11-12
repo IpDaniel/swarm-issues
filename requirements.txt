@@ -1,0 +1,17 @@
+langgraph_swarm
+langchain_core
+langchain_openai
+langgraph
+langgraph-cli
+langsmith
+pydantic
+requests
+pandas
+xlrd
+beautifulsoup4
+python-docx
+openpyxl
+python-dotenv
+pyyaml
+typing_extensions
+
