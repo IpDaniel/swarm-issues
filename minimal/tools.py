@@ -1,10 +1,10 @@
 import logging
 from typing import Annotated, Any
 from langgraph.prebuilt import InjectedState
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 from special_logger import loggy
-
-logger = logging.getLogger(__name__)
 
 # Order management tools
 @tool
@@ -13,7 +13,8 @@ def add_to_order(
     quantity: int,
     price: float,
     state: Annotated[Any, InjectedState],
-) -> dict:
+    tool_call_id: Annotated[str, InjectedToolCallId]
+) -> Command:
     """Add an item to the customer's order.
     
     Args:
@@ -22,13 +23,9 @@ def add_to_order(
         price: Price per item
     """
     
-    # loggy.info(f"State before adding to order: {state["order"]}")
-    # loggy.save_json(state)
     loggy.info(f"State type: {type(state)}. State keys: {list(state.keys())}")
-    logger.info(f"[DEBUG add_to_order] Received state: {state}")
     current_items = state.get("order_items", [])
     current_total = state.get("order_total", 0.0)
-    logger.info(f"[DEBUG add_to_order] Current items: {current_items}, Current total: {current_total}")
     
     new_item = {
         "name": item_name,
@@ -39,19 +36,22 @@ def add_to_order(
     
     updated_items = current_items + [new_item]
     updated_total = current_total + (quantity * price)
-    logger.info(f"[DEBUG add_to_order] Returning update: order_items={len(updated_items)} items, order_total={updated_total}")
     
-    return {
+    message = ToolMessage(content=f"Added Item {item_name} with quantity {quantity} and price {price}", tool_call_id=tool_call_id)
+    update = {
         "order_items": updated_items,
-        "order_total": updated_total
+        "order_total": updated_total,
+        "messages": [message]
     }
+    return Command(update=update)
 
 
 @tool
 def remove_from_order(
     item_name: str,
     state: Annotated[Any, InjectedState],
-) -> dict:
+    tool_call_id: Annotated[str, InjectedToolCallId]
+) -> Command:
     """Remove an item from the customer's order.
     
     Args:
@@ -66,41 +66,49 @@ def remove_from_order(
     
     removed_total = sum(item["total"] for item in removed_items)
     
-    return {
+    message = ToolMessage(content=f"removed item {item_name} from order", tool_call_id=tool_call_id)
+    update = {
         "order_items": updated_items,
-        "order_total": current_total - removed_total
+        "order_total": current_total - removed_total,
+        "messages": [message]
     }
+    return Command(update=update)
+    
 
 
 @tool
 def update_customer_info(
+    name: str,
+    email: str,
     state: Annotated[Any, InjectedState],
-    name: str = "",
-    email: str = "",
-) -> dict:
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
     """Update customer information.
     
     Args:
         name: Customer's name
         email: Customer's email address
     """
-    # loggy.info(f"The state right before the customer info is updated: {state["order"]}")
-    # loggy.save_json(state)
-    loggy.info(f"State type: {type(state)}")
-    logger.info(f"[DEBUG update_customer_info] Received state: {state}")
-    updates = {}
-    if name:
-        updates["customer_name"] = name
-    if email:
-        updates["customer_email"] = email
-    logger.info(f"[DEBUG update_customer_info] Returning updates: {updates}")
-    return updates
+    try:
+        loggy.info(f"State type: {type(state)}")
+        message = ToolMessage(content=f"updated customer info with {name} and {email}", tool_call_id=tool_call_id)
+        update = {
+            "customer_name": name,
+            "customer_email": email,
+            "messages": [message]
+        }
+        return Command(update=update)
+    except Exception as e:
+        # Ensure we always return a Command with ToolMessage, even on error
+        error_message = ToolMessage(content=f"Error updating customer info: {str(e)}", tool_call_id=tool_call_id)
+        return Command(update={"messages": [error_message]})
 
 
 @tool
 def finalize_order(
     state: Annotated[Any, InjectedState],
-) -> str:
+    tool_call_id: Annotated[str, InjectedToolCallId]
+) -> Command:
     """Finalize and submit the order for processing.
     
     This tool completes the order and should only be called when:
@@ -108,27 +116,25 @@ def finalize_order(
     - Customer information is complete
     - Customer has approved the order
     """
-    # loggy.info(f"State before order is finalized: {state["order"]}")
-    # loggy.save_json(state)
-    loggy.info(f"State type: {type(state)}")
-    logger.info(f"[DEBUG finalize_order] Received FULL state: {state}")
-    logger.info(f"[DEBUG finalize_order] State keys: {list(state.keys())}")
+    loggy.info(f"State type right before order is finalized: {type(state)}")
+    loggy.info(f"State right before order is finalized: {state}")
     order_items = state.get("order_items", [])
-    order_total = state.get("order_total", 0.0)
     customer_name = state.get("customer_name", "")
-    logger.info(f"[DEBUG finalize_order] order_items type: {type(order_items)}, value: {order_items}")
-    logger.info(f"[DEBUG finalize_order] order_total: {order_total}")
-    logger.info(f"[DEBUG finalize_order] customer_name: {customer_name}")
-    
-    # loggy.info(f"State right before the usual error: {state["order"]}")
-    # loggy.save_json(state)
-    loggy.info(f"State type: {type(state)}")
     if not order_items:
-        logger.error(f"[DEBUG finalize_order] ERROR: order_items is empty or falsy. Type: {type(order_items)}, Value: {repr(order_items)}")
-        return "Error: Cannot finalize an empty order."
+        error_message = ToolMessage(content="Error: Cannot finalize an empty order.", tool_call_id=tool_call_id)
+        return Command(update={"messages": [error_message]})
     
     if not customer_name:
-        return "Error: Customer name is required before finalizing."
+        error_message = ToolMessage(content="Error: Customer name is required before finalizing.", tool_call_id=tool_call_id)
+        loggy.info(f"State right after the order is determined to be empty {state}")
+        return Command(update={"messages": [error_message]})
     
-    # In a real system, you would submit to your order processing system here
-    return f"Order finalized successfully! Order #{hash(str(order_items)) % 10000} for {customer_name} totaling ${order_total:.2f} has been submitted."
+    message = ToolMessage(content=f"Successfully placed order", tool_call_id=tool_call_id)
+    update = {
+        "customer_name": "",
+        "customer_email": "",
+        "order_items": [],
+        "order_total": 0.0,
+        "messages": [message]
+    }
+    return Command(update=update)
